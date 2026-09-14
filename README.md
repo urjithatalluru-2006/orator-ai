@@ -1,3 +1,4 @@
+
 # ORATOR AI — Real-Time AI Communication & Storytelling Coach
 
 ORATOR.AI is an AI-powered real-time communication, storytelling, public speaking, and wit coach. It trains users to become clear, compelling, witty, and emotionally intelligent communicators while preserving their natural flow (*Flow > Perfection*).
@@ -57,3 +58,6 @@ npm run start
 * **Frontend**: React SPA (Vite) with SPA client-side routing fallback (`/*` $\rightarrow$ `/index.html`).
 * **Serverless Functions**: Server-side Netlify Functions (`netlify/functions/`) handling API endpoints (`/api/analyze-session`, `/api/health`, `/api/profile`, `/api/test-gemini`, `/api/live-token`).
 * **Gemini Key Security**: The permanent `GEMINI_API_KEY` exists strictly as a Netlify server-side Environment Variable. It is **never** exposed to browser JavaScript, HTML, bundles, or client logs.
+=======
+# orator-ai
+>>>>>>> 72d64520d34d5c097178b7e47016b83e59d4a6f9
