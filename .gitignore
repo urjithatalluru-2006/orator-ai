@@ -1,0 +1,31 @@
+# Node modules
+node_modules/
+server/node_modules/
+
+# Production build outputs
+dist/
+build/
+.netlify/
+
+# Local Environment Variables & Secrets (CRITICAL SECURITY)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+server/.env
+
+# User profile data & session history (personal data, never commit)
+server/data/
+
+# System & Log files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor & OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
