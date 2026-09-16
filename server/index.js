@@ -71,6 +71,49 @@ app.get('/api/test-gemini', async (req, res) => {
       error: err.message
     });
   }
+// 2b. Gemini Live Ephemeral Token Minting Endpoint
+app.all('/api/live-token', async (req, res) => {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    return res.json({
+      isConfigured: false,
+      message: 'GEMINI_API_KEY is not set in server/.env.'
+    });
+  }
+
+  try {
+    const tokenResponse = await fetch('https://generativelanguage.googleapis.com/v1alpha/auth_tokens', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey
+      },
+      body: JSON.stringify({})
+    });
+
+    if (!tokenResponse.ok) {
+      const errText = await tokenResponse.text();
+      console.error('Google AuthToken error:', tokenResponse.status, errText);
+      return res.json({
+        isConfigured: true,
+        liveAvailable: false,
+        error: `Google AuthToken error ${tokenResponse.status}`
+      });
+    }
+
+    const tokenData = await tokenResponse.json();
+    res.json({
+      isConfigured: true,
+      liveAvailable: true,
+      ephemeralToken: tokenData.name,
+      wsEndpoint: 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained',
+      model: process.env.GEMINI_LIVE_MODEL || 'models/gemini-2.5-flash-native-audio-latest',
+      expiresInSec: 1800
+    });
+  } catch (err) {
+    console.error('Failed to generate live token:', err.message);
+    res.status(500).json({ isConfigured: true, liveAvailable: false, error: err.message });
+  }
 });
 
 // 3. Profile Management Endpoints
