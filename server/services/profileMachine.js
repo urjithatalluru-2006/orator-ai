@@ -20,12 +20,12 @@ const INITIAL_PROFILE = {
   streak_days: 1,
   last_session_date: new Date().toISOString(),
   communication_metrics: {
-    clarity: 70,
-    conciseness: 65,
-    storytelling: 72,
-    delivery: 75,
-    wit: 60,
-    memorability: 68
+    clarity: null,
+    conciseness: null,
+    storytelling: null,
+    delivery: null,
+    wit: null,
+    memorability: null
   },
   recurring_patterns: {
     weaknesses: [
@@ -83,10 +83,14 @@ export function updateProfileWithSession(analysisData, sessionMeta) {
   const alpha = 0.3;
   if (analysisData.scores) {
     Object.keys(profile.communication_metrics).forEach(metric => {
-      if (analysisData.scores[metric] !== undefined) {
+      const newVal = analysisData.scores[metric];
+      if (typeof newVal === 'number' && newVal > 0) {
         const oldVal = profile.communication_metrics[metric];
-        const newVal = analysisData.scores[metric];
-        profile.communication_metrics[metric] = Math.round(oldVal * (1 - alpha) + newVal * alpha);
+        if (typeof oldVal === 'number' && oldVal > 0) {
+          profile.communication_metrics[metric] = Math.round(oldVal * (1 - alpha) + newVal * alpha);
+        } else {
+          profile.communication_metrics[metric] = Math.round(newVal);
+        }
       }
     });
   }

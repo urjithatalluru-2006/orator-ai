@@ -11,6 +11,7 @@
     "start": "concurrently \"npm run server\" \"npm run dev\""
   },
   "dependencies": {
+    "@google/genai": "^2.23.0",
     "canvas-confetti": "^1.9.4",
     "clsx": "^2.1.1",
     "lucide-react": "^0.469.0",

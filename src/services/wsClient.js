@@ -3,20 +3,14 @@
  * 
  * PRODUCTION ARCHITECTURE:
  * 1. Obtains short-lived ephemeral token from /api/live-token (Netlify Function / Express).
- * 2. Connects directly from the browser to Google's Gemini Live BidiGenerateContentConstrained WebSocket.
- * 3. The permanent GEMINI_API_KEY is NEVER exposed to the browser.
- * 4. Bidirectional conversational streaming with Gemini Live audio/text.
- * 5. Integrated local flow-preserving intervention policy engine for 0ms HUD coaching cues.
- * 6. Automatic reconnection and session recovery on network blips or token refresh.
+ * 2. Connects directly to Google's Gemini Live BidiGenerateContentConstrained WebSocket.
+ * 3. Permanent GEMINI_API_KEY is NEVER exposed to the browser.
+ * 4. Enables inputAudioTranscription for native audio transcription.
+ * 5. Plays Gemini Live 24kHz PCM audio responses directly through Web Audio API.
+ * 6. Evaluates real-time Flow > Perfection coaching cues with zero latency.
+ * 7. Reconnects automatically with token refresh on disconnection.
+ * 8. Diagnostic logging with [ORATOR][LIVE] and [ORATOR][COACH].
  */
-
-// Flow > Perfection Intervention Configuration
-const INTERVENTION_CONFIG = {
-  THRESHOLD: 0.50,
-  MAX_SPEED_WPM: 195,
-  SILENCE_THRESHOLD_SEC: 4.0,
-  MAX_CUE_WORDS: 4
-};
 
 export class LiveCoachingWSClient {
   constructor(onMessageCallback, onErrorCallback) {
@@ -27,39 +21,47 @@ export class LiveCoachingWSClient {
     this.isGeminiLiveDirect = false;
     this.setupCompleted = false;
 
-    // Session State
+    // Session Parameters
     this.mode = 'free_talk';
     this.persona = 'Skeptical Investor';
     this.model = 'models/gemini-2.5-flash-native-audio-latest';
     this.ephemeralToken = null;
     this.wsEndpoint = null;
 
-    // Reconnection & Heartbeat
+    // Audio Playback Context for Gemini 24kHz PCM audio
+    this.playbackCtx = null;
+
+    // Reconnection State
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;
     this.reconnectTimer = null;
     this.isExplicitlyClosed = false;
 
-    // Live Metrics Cache for Intervention Engine
-    this.currentMetrics = {
+    // Metrics Cache for Live Coaching Intervention
+    this.metrics = {
       wpm: 0,
       silenceSec: 0,
+      totalSilenceSec: 0,
+      speakingTimeSec: 0,
+      pauseCount: 0,
       fillerCount: 0,
-      storyMomentum: 'normal',
+      fillerRate: 0,
+      wordCount: 0,
       gazeRatio: 0.85,
-      postureDelta: 0
+      postureDelta: 0,
+      isSpeaking: false,
+      storyMomentum: 'normal'
     };
 
-    // Rate Limiting Interventions (At least 8 seconds between HUD toasts)
-    this.lastInterventionTime = 0;
+    // Rate Limiting Interventions (Min 7s between HUD coaching cues)
+    this.lastCueTime = 0;
+    this.lastCueType = null;
   }
 
-  /**
-   * Initializes session parameters before connection
-   */
   initSession(mode = 'free_talk', persona = 'Skeptical Investor') {
     this.mode = mode;
     this.persona = persona;
+    console.log(`[ORATOR][LIVE] Session initialized: mode=${mode}, persona=${persona}`);
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       if (this.isGeminiLiveDirect) {
@@ -74,51 +76,49 @@ export class LiveCoachingWSClient {
     }
   }
 
-  /**
-   * Main connection flow: obtains ephemeral token then connects
-   */
   async connect() {
     this.isExplicitlyClosed = false;
+    console.log('[ORATOR][LIVE] Requesting ephemeral token from /api/live-token...');
+
     try {
-      // 1. Request ephemeral token from secure server-side Netlify Function / API
       const tokenRes = await fetch('/api/live-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
 
       if (!tokenRes.ok) {
-        throw new Error(`Token service responded with status ${tokenRes.status}`);
+        throw new Error(`Token endpoint returned status ${tokenRes.status}`);
       }
 
       const tokenData = await tokenRes.json();
+      console.log('[ORATOR][LIVE] Live token response:', {
+        isConfigured: tokenData.isConfigured,
+        liveAvailable: tokenData.liveAvailable,
+        endpoint: tokenData.wsEndpoint ? 'AVAILABLE' : 'NONE'
+      });
 
       if (tokenData && tokenData.liveAvailable && tokenData.ephemeralToken && tokenData.wsEndpoint) {
-        // PRODUCTION: Connect directly to Google Gemini Live API with ephemeral token
         this.ephemeralToken = tokenData.ephemeralToken;
         this.wsEndpoint = tokenData.wsEndpoint;
         this.model = tokenData.model || 'models/gemini-2.5-flash-native-audio-latest';
 
         const directUrl = `${this.wsEndpoint}?access_token=${encodeURIComponent(this.ephemeralToken)}`;
+        console.log('[ORATOR][LIVE] Connecting directly to Gemini Live constrained endpoint...');
         this.connectToGeminiLive(directUrl);
       } else {
-        // LOCAL DEV FALLBACK: Connect to local Express WebSocket proxy
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const host = window.location.host;
-        const proxyUrl = `${protocol}//${host}/api/live-stream`;
-        this.connectToProxy(proxyUrl);
+        console.log('[ORATOR][LIVE] Ephemeral token unavailable. Client operating in local flow and delivery coaching mode.');
+        if (this.onError) {
+          this.onError(new Error('Ephemeral token unavailable. Operating in local delivery coaching mode.'));
+        }
       }
     } catch (err) {
-      console.warn('Live WebSocket token resolution failed, attempting proxy fallback:', err.message);
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const host = window.location.host;
-      const proxyUrl = `${protocol}//${host}/api/live-stream`;
-      this.connectToProxy(proxyUrl);
+      console.warn('[ORATOR][LIVE] Token acquisition error. Operating in local delivery coaching mode:', err.message);
+      if (this.onError) {
+        this.onError(err);
+      }
     }
   }
 
-  /**
-   * Connect directly to Google Gemini Live BidiGenerateContentConstrained
-   */
   connectToGeminiLive(wsUrl) {
     try {
       this.ws = new WebSocket(wsUrl);
@@ -127,7 +127,7 @@ export class LiveCoachingWSClient {
       this.ws.onopen = () => {
         this.isConnected = true;
         this.reconnectAttempts = 0;
-        console.log('✅ Connected to Gemini Live API directly via Ephemeral Token');
+        console.log('[ORATOR][LIVE] ✅ Connected to Gemini Live WSS successfully!');
         this.sendGeminiSetup();
       };
 
@@ -136,99 +136,155 @@ export class LiveCoachingWSClient {
       };
 
       this.ws.onerror = (err) => {
-        console.warn('Gemini Live WebSocket notice:', err);
+        console.warn('[ORATOR][LIVE] Gemini Live WebSocket error:', err);
         if (this.onError) this.onError(err);
       };
 
       this.ws.onclose = (event) => {
         this.isConnected = false;
         this.setupCompleted = false;
-        console.log(`Gemini Live WS closed (code: ${event.code})`);
+        console.log(`[ORATOR][LIVE] Gemini Live WebSocket closed (code: ${event.code})`);
         this.handleAutoReconnect();
       };
     } catch (err) {
-      console.error('Failed to initialize Gemini Live WebSocket:', err);
+      console.error('[ORATOR][LIVE] Error connecting to Gemini Live:', err);
       if (this.onError) this.onError(err);
     }
   }
 
-  /**
-   * Send initial Gemini Live setup frame
-   */
   sendGeminiSetup() {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
-    const personaInstructions = {
-      'Skeptical Investor': 'You are an aggressive venture capital partner evaluating a live startup pitch. Challenge unit economics, interrupt vague storytelling, and demand concrete numbers.',
-      'Hostile Audience': 'You are an adversarial conference attendee. Express skepticism, challenge claims, and ask difficult probing counter-questions.',
-      'Executive': 'You are a busy C-suite executive with only 2 minutes. Demand immediate bottom-line clarity and interrupt long preamble.',
-      'Interviewer': 'You are an executive hiring interviewer testing leadership and communication clarity. Ask sharp behavioral questions.'
+    const personaPrompts = {
+      'Skeptical Investor': 'You are a skeptical VC partner listening to a speech. Challenge weak assumptions, demand unit economics, and test clarity.',
+      'Hostile Audience': 'You are an adversarial audience member. Question claims, raise counterarguments, and demand proof.',
+      'Executive': 'You are a busy C-suite executive with limited time. Demand conciseness and immediate bottom-line impact.',
+      'Interviewer': 'You are an executive interviewer. Ask sharp behavioral questions to test depth and authentic communication.'
     };
 
     const systemPrompt = `
-You are ORATOR.AI, a world-class real-time human communication, storytelling, and speech coach.
-Current Mode: ${this.mode}.
-Roleplay Persona: ${personaInstructions[this.persona] || personaInstructions['Skeptical Investor']}
+You are ORATOR.AI, a live communication, storytelling, and speech coach.
+Mode: ${this.mode}.
+Persona: ${personaPrompts[this.persona] || personaPrompts['Skeptical Investor']}
 
-ROLEPLAY RULES:
-- When the speaker talks to you, respond realistically and concisely as this persona.
-- Keep responses to 1-2 punchy sentences to maintain natural conversation tempo.
-- Never lecture on grammar. Focus on delivery, hook, clarity, and persuasive impact.
+Be concise, constructive, and dynamic. In conversation mode, reply in 1-2 sharp conversational sentences.
 `;
 
     const setupMsg = {
       setup: {
         model: this.model,
         generationConfig: {
-          responseModalities: ['TEXT']
+          responseModalities: ['AUDIO']
         },
+        inputAudioTranscription: {},
         systemInstruction: {
           parts: [{ text: systemPrompt }]
         }
       }
     };
 
+    console.log('[ORATOR][LIVE] Sending setup frame to Gemini Live...');
     this.ws.send(JSON.stringify(setupMsg));
   }
 
-  /**
-   * Process raw message from Gemini Live WebSocket
-   */
-  handleGeminiLiveMessage(raw) {
+  handleGeminiLiveMessage(rawData) {
     try {
-      const msg = typeof raw === 'string' ? JSON.parse(raw) : JSON.parse(new TextDecoder().decode(raw));
+      const msg = typeof rawData === 'string' ? JSON.parse(rawData) : JSON.parse(new TextDecoder().decode(rawData));
 
+      // 1. Setup Complete
       if (msg.setupComplete) {
         this.setupCompleted = true;
-        console.log('✅ Gemini Live setupComplete received. Ready for streaming.');
+        console.log('[ORATOR][LIVE] ✅ Gemini Live setupComplete received. Session active.');
         return;
       }
 
-      if (msg.serverContent) {
-        const parts = msg.serverContent.modelTurn?.parts || [];
-        let combinedText = '';
-
-        for (const part of parts) {
-          if (part.text) combinedText += part.text;
-        }
-
-        if (combinedText.trim() && this.onMessage) {
+      // 2. Input Audio Transcription (Committed / Interim from Gemini)
+      if (msg.serverContent?.inputTranscription) {
+        const text = msg.serverContent.inputTranscription.text;
+        console.log('[ORATOR][LIVE] Gemini inputTranscription (committed):', text);
+        if (this.onMessage && text) {
           this.onMessage({
-            type: 'ROLEPLAY_RESPONSE',
-            persona: this.persona,
-            response: combinedText.trim(),
-            timestamp: Date.now()
+            type: 'LIVE_TRANSCRIPT',
+            text: text.trim(),
+            isFinal: true
           });
         }
       }
+
+      if (msg.serverContent?.interimInputTranscription) {
+        const text = msg.serverContent.interimInputTranscription.text;
+        if (this.onMessage && text) {
+          this.onMessage({
+            type: 'LIVE_TRANSCRIPT',
+            text: text.trim(),
+            isFinal: false
+          });
+        }
+      }
+
+      // 3. Model Audio / Turn Responses
+      if (msg.serverContent?.modelTurn?.parts) {
+        const parts = msg.serverContent.modelTurn.parts;
+        for (const part of parts) {
+          // If Gemini streams 24kHz PCM audio back
+          if (part.inlineData && part.inlineData.data) {
+            this.playPcmAudio(part.inlineData.data, part.inlineData.mimeType);
+          }
+          // If text is provided
+          if (part.text && this.onMessage) {
+            this.onMessage({
+              type: 'ROLEPLAY_RESPONSE',
+              persona: this.persona,
+              response: part.text.trim(),
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            });
+          }
+        }
+      }
     } catch (err) {
-      console.warn('Error parsing Gemini Live message:', err.message);
+      console.warn('[ORATOR][LIVE] Error parsing message:', err.message);
     }
   }
 
   /**
-   * Fallback connection to local Express WebSocket proxy (dev mode)
+   * Plays base64 PCM audio from Gemini Live response
    */
+  playPcmAudio(base64Audio, mimeType) {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!this.playbackCtx) {
+        this.playbackCtx = new AudioCtx({ sampleRate: 24000 });
+      }
+      if (this.playbackCtx.state === 'suspended') {
+        this.playbackCtx.resume();
+      }
+
+      const binary = atob(base64Audio);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+
+      // Convert 16-bit signed PCM to Float32
+      const int16Array = new Int16Array(bytes.buffer);
+      const float32Array = new Float32Array(int16Array.length);
+      for (let i = 0; i < int16Array.length; i++) {
+        float32Array[i] = int16Array[i] / 32768;
+      }
+
+      const audioBuffer = this.playbackCtx.createBuffer(1, float32Array.length, 24000);
+      audioBuffer.copyToChannel(float32Array, 0);
+
+      const source = this.playbackCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(this.playbackCtx.destination);
+      source.start();
+    } catch (e) {
+      console.warn('[ORATOR][LIVE] Error playing PCM audio:', e.message);
+    }
+  }
+
   connectToProxy(wsUrl) {
     try {
       this.ws = new WebSocket(wsUrl);
@@ -237,7 +293,7 @@ ROLEPLAY RULES:
       this.ws.onopen = () => {
         this.isConnected = true;
         this.reconnectAttempts = 0;
-        console.log('Connected to local ORATOR AI WebSocket proxy');
+        console.log('[ORATOR][LIVE] Connected to local proxy WebSocket.');
         this.initSession(this.mode, this.persona);
       };
 
@@ -249,7 +305,7 @@ ROLEPLAY RULES:
       };
 
       this.ws.onerror = (err) => {
-        console.warn('Proxy WebSocket notice:', err);
+        console.warn('[ORATOR][LIVE] Proxy WebSocket notice:', err);
       };
 
       this.ws.onclose = () => {
@@ -257,20 +313,17 @@ ROLEPLAY RULES:
         this.handleAutoReconnect();
       };
     } catch (e) {
-      console.warn('Proxy connection error:', e.message);
+      console.warn('[ORATOR][LIVE] Proxy connection error:', e.message);
     }
   }
 
-  /**
-   * Automatic Reconnection with Exponential Backoff & Token Refresh
-   */
   handleAutoReconnect() {
     if (this.isExplicitlyClosed) return;
 
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
-      const delay = Math.min(10000, 1000 * Math.pow(1.5, this.reconnectAttempts));
-      console.log(`Live connection interrupted. Reconnecting in ${Math.round(delay / 1000)}s (Attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+      const delay = Math.min(8000, 1000 * Math.pow(1.5, this.reconnectAttempts));
+      console.log(`[ORATOR][LIVE] Connection dropped. Auto-reconnecting in ${Math.round(delay / 1000)}s (Attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
 
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = setTimeout(() => {
@@ -280,19 +333,115 @@ ROLEPLAY RULES:
   }
 
   /**
-   * Send speech chunk + evaluate zero-latency local Flow > Perfection coaching cues
+   * Evaluates live metrics on every tick and emits coaching cues when warranted
    */
+  updateMetrics(metrics) {
+    this.metrics = { ...this.metrics, ...metrics };
+    this.evaluateInterventions();
+  }
+
+  /**
+   * Flow > Perfection Intervention Engine:
+   * Actionable real-time guidance that protects speaking flow while correcting flaws
+   */
+  evaluateInterventions() {
+    const now = Date.now();
+    // Cooldown: at least 7 seconds between coaching cues
+    if (now - this.lastCueTime < 7000) return;
+
+    const { 
+      wpm, 
+      silenceSec, 
+      fillerCount, 
+      fillerRate, 
+      gazeRatio, 
+      postureDelta, 
+      isSpeaking, 
+      wordCount 
+    } = this.metrics;
+
+    let cue = null;
+    let category = 'general';
+    let tip = '';
+
+    // 1. Pacing Too Fast (>185 WPM with at least 10 words captured)
+    if (isSpeaking && wpm > 185 && wordCount >= 10 && this.lastCueType !== 'pacing_fast') {
+      cue = 'Slow down.';
+      category = 'PACING';
+      tip = `Pacing is ${wpm} WPM. Take a breath to let your key points land.`;
+      this.lastCueType = 'pacing_fast';
+    }
+    // 2. Pacing Too Slow (<95 WPM while actively speaking)
+    else if (isSpeaking && wpm > 0 && wpm < 95 && wordCount >= 8 && this.lastCueType !== 'pacing_slow') {
+      cue = 'Pick up momentum.';
+      category = 'PACING';
+      tip = `Pacing is ${wpm} WPM. Build forward drive and conversational energy.`;
+      this.lastCueType = 'pacing_slow';
+    }
+    // 3. Excessive Silence / Hesitation (>= 3.5s pause)
+    else if (silenceSec >= 3.5 && this.lastCueType !== 'silence') {
+      category = 'FLOW';
+      if (this.mode === 'story_lab') {
+        cue = "What's the tension?";
+        tip = 'Bring in the conflict, obstacle, or surprise.';
+      } else if (this.mode === 'public_speaking') {
+        cue = 'Land the point.';
+        tip = 'Summarize your core thesis with conviction.';
+      } else if (this.mode === 'conversation') {
+        cue = 'Invite their reaction.';
+        tip = 'Ask a question or pass the conversational floor.';
+      } else {
+        cue = 'Deliver the takeaway.';
+        tip = 'State your clear takeaway and transition forward.';
+      }
+      this.lastCueType = 'silence';
+    }
+    // 4. Filler Word Burst (>= 3 fillers or filler rate > 4/min)
+    else if (fillerCount >= 3 && fillerRate > 3.0 && this.lastCueType !== 'filler') {
+      cue = 'Pause instead of filler.';
+      category = 'CLARITY';
+      tip = `Detected ${fillerCount} filler words. Replace 'um' or 'like' with a silent pause.`;
+      this.lastCueType = 'filler';
+    }
+    // 5. Eye Contact Disengagement (Gaze focus < 40%)
+    else if (gazeRatio < 0.40 && this.lastCueType !== 'gaze') {
+      cue = 'Look at the lens.';
+      category = 'PRESENCE';
+      tip = 'Direct eye contact commands audience confidence.';
+      this.lastCueType = 'gaze';
+    }
+    // 6. Posture Instability (Shift > 0.35)
+    else if (postureDelta > 0.35 && this.lastCueType !== 'posture') {
+      cue = 'Anchor your shoulders.';
+      category = 'PRESENCE';
+      tip = 'Steady, grounded posture signals executive authority.';
+      this.lastCueType = 'posture';
+    }
+
+    if (cue) {
+      this.lastCueTime = now;
+      console.log(`[ORATOR][COACH] 💡 Triggered HUD Cue: [${category}] "${cue}" — ${tip}`);
+
+      if (this.onMessage) {
+        this.onMessage({
+          type: 'LIVE_CUE',
+          cue,
+          category,
+          tip,
+          timestamp: now
+        });
+      }
+    }
+  }
+
   sendSpeechChunk({ transcript, wpm, silenceSec, fillersInChunk, storyMomentum }) {
-    // Update cached metrics
-    this.currentMetrics.wpm = wpm || this.currentMetrics.wpm;
-    this.currentMetrics.silenceSec = silenceSec || 0;
-    this.currentMetrics.fillerCount += fillersInChunk || 0;
-    this.currentMetrics.storyMomentum = storyMomentum || this.currentMetrics.storyMomentum;
+    this.updateMetrics({
+      wpm,
+      silenceSec,
+      fillerCount: this.metrics.fillerCount + (fillersInChunk || 0),
+      storyMomentum
+    });
 
-    // 1. Evaluate Zero-Latency Flow Coaching Intervention Cues locally
-    this.evaluateLocalIntervention(transcript);
-
-    // 2. If connected to local proxy, forward chunk
     if (!this.isGeminiLiveDirect && this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.send({
         type: 'SPEECH_CHUNK',
@@ -305,81 +454,8 @@ ROLEPLAY RULES:
     }
   }
 
-  /**
-   * Evaluates real-time candidate signals against Flow > Perfection
-   * Net Benefit = (Severity * Confidence * Impact) - Interruption Cost
-   */
-  evaluateLocalIntervention(transcriptChunk) {
-    const now = Date.now();
-    // Throttle HUD coaching cues to prevent over-interruption (min 8s apart)
-    if (now - this.lastInterventionTime < 8000) return;
-
-    const { wpm, silenceSec, fillerCount, storyMomentum, gazeRatio } = this.currentMetrics;
-    let severity = 0;
-    let confidence = 0.9;
-    let impact = 0.5;
-    let interruptionCost = 0.5;
-    let candidateCue = null;
-    let category = 'general';
-
-    // Protect narrative flow aggressively
-    if (storyMomentum === 'high') {
-      interruptionCost = 0.85;
-    }
-
-    // 1. Pacing intervention (speaking too fast under pressure)
-    if (wpm > INTERVENTION_CONFIG.MAX_SPEED_WPM) {
-      severity = Math.min(1.0, (wpm - INTERVENTION_CONFIG.MAX_SPEED_WPM) / 40);
-      impact = 0.8;
-      candidateCue = 'Slow down.';
-      category = 'pacing';
-    }
-    // 2. Prolonged silence / hesitation
-    else if (silenceSec >= INTERVENTION_CONFIG.SILENCE_THRESHOLD_SEC) {
-      severity = Math.min(1.0, silenceSec / 6.0);
-      impact = 0.75;
-      if (this.mode === 'story_lab') candidateCue = "What's the tension?";
-      else if (this.mode === 'public_speaking') candidateCue = 'Take a pause.';
-      else candidateCue = 'Land the point.';
-      category = 'flow';
-    }
-    // 3. Filler word burst
-    else if (fillerCount >= 4 && storyMomentum !== 'high') {
-      severity = 0.65;
-      impact = 0.6;
-      candidateCue = 'Pause instead of filler.';
-      category = 'clarity';
-    }
-    // 4. Lost eye contact / off-screen gaze
-    else if (gazeRatio < 0.35) {
-      severity = 0.6;
-      impact = 0.7;
-      candidateCue = 'Bring them back.';
-      category = 'visual';
-    }
-
-    const netBenefit = (severity * confidence * impact) - interruptionCost;
-
-    if (candidateCue && netBenefit > INTERVENTION_CONFIG.THRESHOLD) {
-      this.lastInterventionTime = now;
-      if (this.onMessage) {
-        this.onMessage({
-          type: 'LIVE_CUE',
-          cue: candidateCue,
-          category,
-          netBenefit: parseFloat(netBenefit.toFixed(2)),
-          timestamp: now
-        });
-      }
-    }
-  }
-
-  /**
-   * Send visual CV metrics (gaze, posture)
-   */
   sendVisualMetrics({ gazeRatio, postureDelta }) {
-    if (gazeRatio !== undefined) this.currentMetrics.gazeRatio = gazeRatio;
-    if (postureDelta !== undefined) this.currentMetrics.postureDelta = postureDelta;
+    this.updateMetrics({ gazeRatio, postureDelta });
 
     if (!this.isGeminiLiveDirect && this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.send({
@@ -390,12 +466,10 @@ ROLEPLAY RULES:
     }
   }
 
-  /**
-   * Send roleplay prompt to Gemini Live (or local fallback)
-   */
   sendRoleplayPrompt(userUtterance, persona) {
+    console.log(`[ORATOR][LIVE] Sending roleplay turn: "${userUtterance.slice(-80)}"`);
+
     if (this.isGeminiLiveDirect && this.ws && this.ws.readyState === WebSocket.OPEN) {
-      // Send user turn to Gemini Live WebSocket
       const clientContentMsg = {
         clientContent: {
           turns: [
@@ -409,7 +483,6 @@ ROLEPLAY RULES:
       };
       this.ws.send(JSON.stringify(clientContentMsg));
     } else if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      // Send to local proxy
       this.send({
         type: 'ROLEPLAY_PROMPT',
         userUtterance,
@@ -418,19 +491,14 @@ ROLEPLAY RULES:
     }
   }
 
-  /**
-   * Low-level send helper
-   */
   send(data) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(data));
     }
   }
 
-  /**
-   * Disconnect safely and prevent auto-reconnect
-   */
   disconnect() {
+    console.log('[ORATOR][LIVE] Disconnecting WebSocket.');
     this.isExplicitlyClosed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
 
@@ -439,6 +507,10 @@ ROLEPLAY RULES:
       this.ws = null;
       this.isConnected = false;
       this.setupCompleted = false;
+    }
+    if (this.playbackCtx) {
+      try { this.playbackCtx.close(); } catch (e) {}
+      this.playbackCtx = null;
     }
   }
 }

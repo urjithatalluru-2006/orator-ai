@@ -18,9 +18,10 @@ export function ProfileDashboard({ profile }) {
     mastery_progress: { story_hooks: 0.65 }
   };
 
-  const chartData = history.slice(0, 10).reverse().map((s, idx) => ({
+  const validHistory = history.filter(s => typeof s.overallScore === 'number' && s.overallScore > 0);
+  const chartData = validHistory.slice(0, 10).reverse().map((s, idx) => ({
     name: `S${idx + 1}`,
-    score: s.overallScore || 0,
+    score: s.overallScore,
     mode: s.mode || 'Free Talk'
   }));
 

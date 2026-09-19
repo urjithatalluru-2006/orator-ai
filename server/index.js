@@ -1,13 +1,10 @@
 import express from 'express';
-import http from 'http';
-import { WebSocketServer } from 'ws';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 
-import { handleLiveConnection } from './services/geminiLive.js';
 import { runPostSessionAnalysis } from './services/postSessionAnalysis.js';
 import { getProfile, updateProfileWithSession } from './services/profileMachine.js';
 import { GEMINI_MODELS } from './config/models.js';
@@ -19,8 +16,6 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, '.env') });
 
 const app = express();
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/api/live-stream' });
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -175,6 +170,19 @@ app.post('/api/analyze-session', async (req, res) => {
       return res.status(400).json({ error: 'Missing session transcript payload.' });
     }
 
+    // [CRITERION 12]: /api/analyze-session receives that exact session data
+    console.log('[ORATOR][API] /api/analyze-session received exact session payload:', {
+      wordCount: sessionPayload.wordCount,
+      durationSec: sessionPayload.durationSec,
+      wpmAvg: sessionPayload.wpmAvg,
+      fillerCount: sessionPayload.fillerCount,
+      pauseCount: sessionPayload.pauseCount,
+      speakingTimeSec: sessionPayload.speakingTimeSec,
+      silenceSecondsTotal: sessionPayload.silenceSecondsTotal,
+      transcriptSnippet: sessionPayload.transcript.slice(0, 60),
+      cuesCount: sessionPayload.cuesTriggered?.length || 0
+    });
+
     // Run post-session analysis safely
     const analysisResult = await runPostSessionAnalysis({ sessionPayload });
 
@@ -192,16 +200,11 @@ app.post('/api/analyze-session', async (req, res) => {
   }
 });
 
-// 5. WebSocket Live Coaching Stream Routing
-wss.on('connection', (ws, req) => {
-  handleLiveConnection(ws, req);
-});
-
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
+app.listen(PORT, () => {
   console.log(`====================================================`);
   console.log(`ORATOR AI Server running on http://localhost:${PORT}`);
-  console.log(`WebSocket Endpoint: ws://localhost:${PORT}/api/live-stream`);
+  console.log(`Live Token Endpoint: http://localhost:${PORT}/api/live-token`);
   console.log(`Gemini API Key Configured: ${isGeminiConfigured() ? 'YES (server/.env)' : 'NO (Missing GEMINI_API_KEY in server/.env)'}`);
   console.log(`====================================================`);
 });

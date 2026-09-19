@@ -140,26 +140,29 @@ function computeAlgorithmicAnalysis({
   const words = transcript.trim().split(/\s+/).filter(Boolean);
   const wordCount = words.length;
 
-  if (wordCount === 0) {
+  if (wordCount < 5) {
     return {
-      executiveVerdict: "No spoken transcript was captured during this session. Speak clearly into the microphone to receive full coaching feedback.",
+      executiveVerdict: wordCount === 0
+        ? "No spoken transcript was captured during this session. Speak clearly into the microphone to receive full coaching feedback."
+        : `Only ${wordCount} words captured ("${transcript.trim()}"). Minimum 5 words required to calculate meaningful communication scores.`,
       topStrengths: ["Session initiated cleanly"],
-      topWeaknesses: ["No active speech detected"],
-      scores: { clarity: 0, conciseness: 0, storytelling: 0, delivery: 0, wit: 0, memorability: 0, overall: 0 },
-      storytellingBreakdown: { structureIdentified: "No Speech Detected", hookRating: "N/A", hookExplanation: "No speech captured.", tensionScore: 0, payoffScore: 0, specificityRating: "N/A" },
-      deliveryMetrics: { wpmAssessment: "0 WPM (Silent session)", fillerBreakdown: "0 fillers detected", pauseEffectiveness: "Continuous silence" },
+      topWeaknesses: [wordCount === 0 ? "No active speech detected" : "Insufficient speech sample (< 5 words)"],
+      scores: { clarity: null, conciseness: null, storytelling: null, delivery: null, wit: null, memorability: null, overall: null },
+      storytellingBreakdown: { structureIdentified: "Insufficient Evidence", hookRating: "N/A", hookExplanation: "Insufficient speech captured.", tensionScore: null, payoffScore: null, specificityRating: "N/A" },
+      deliveryMetrics: { wpmAssessment: `${wpmAvg || 0} WPM (Sample too short)`, fillerBreakdown: `${fillerCount} fillers detected`, pauseEffectiveness: "Insufficient evidence" },
       visualAssessment: { gazeObservation: "Standard camera positioning", postureObservation: "Normal baseline posture" },
-      memorabilitySpotlight: { mostMemorableLine: "N/A (Silent session)", whyMemorable: "N/A", mostForgettableMoment: "N/A", improvementSuggestion: "Start speaking naturally when session begins." },
+      memorabilitySpotlight: { mostMemorableLine: "N/A (Insufficient evidence)", whyMemorable: "N/A", mostForgettableMoment: "N/A", improvementSuggestion: "Start speaking naturally when session begins." },
       witAnalysis: { observedWitMoments: [], witMechanicUsed: "N/A", coachingTip: "Speak naturally to analyze wit mechanics." },
-      attentionTimeline: [{ timestampSec: 0, attentionLevel: 0, note: "Silent session" }],
+      attentionTimeline: [{ timestampSec: 0, attentionLevel: null, note: "Insufficient speech data" }],
       recommendedDrill: { title: "Spontaneous Speaking Warmup", instructions: "Speak continuously for 20 seconds on any topic.", targetWeakness: "Silence / No Speech Captured" }
     };
   }
 
+  const effectiveWpm = wpmAvg > 0 ? wpmAvg : Math.round(wordCount / Math.max(0.1, durationSec / 60));
   const fillerRatio = fillerCount / wordCount;
   const clarityScore = Math.max(30, Math.min(98, Math.round(92 - (fillerRatio * 300))));
   
-  const wpmDelta = Math.abs(wpmAvg - 145);
+  const wpmDelta = Math.abs(effectiveWpm - 145);
   const concisenessScore = Math.max(30, Math.min(95, Math.round(90 - (wpmDelta * 0.4))));
 
   const silenceRatio = silenceSecondsTotal / Math.max(1, durationSec);
@@ -178,14 +181,14 @@ function computeAlgorithmicAnalysis({
   const mostForgettableMoment = sortedSentences[0]?.trim() || transcript.slice(-80);
 
   return {
-    executiveVerdict: `You spoke ${wordCount} words at an average pace of ${wpmAvg} WPM over ${durationSec} seconds with ${fillerCount} filler words detected.`,
+    executiveVerdict: `You spoke ${wordCount} words at an average pace of ${effectiveWpm} WPM over ${durationSec} seconds with ${fillerCount} filler words detected.`,
     topStrengths: [
-      wpmAvg >= 120 && wpmAvg <= 170 ? "Pacing maintained in optimal 120-170 WPM range" : "Active speaking participation",
+      effectiveWpm >= 120 && effectiveWpm <= 170 ? `Pacing maintained in optimal 120-170 WPM range (${effectiveWpm} WPM)` : "Active speaking participation",
       fillerCount <= 2 ? "Low filler word usage" : "Captured continuous narrative flow"
     ],
     topWeaknesses: [
       fillerCount > 3 ? `Detected ${fillerCount} filler words (replace with clean pauses)` : "Introductions can be more concise",
-      wpmAvg > 190 ? "Speech rate was fast under pressure" : "Tension before payoff can be heightened"
+      effectiveWpm > 190 ? `Speech rate was fast (${effectiveWpm} WPM under pressure)` : "Tension before payoff can be heightened"
     ],
     scores: {
       clarity: clarityScore,

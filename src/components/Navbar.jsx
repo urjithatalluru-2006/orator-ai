@@ -5,9 +5,12 @@ export function Navbar({ activeTab, setActiveTab, profile, onOpenSettings }) {
   const streak = profile?.streak_days || 1;
   const sessionsCount = profile?.sessions_completed || 0;
   
-  // Calculate score ONLY if real sessions exist
-  const overallScore = (sessionsCount > 0 && profile?.communication_metrics)
-    ? Math.round(Object.values(profile.communication_metrics).reduce((a, b) => a + b, 0) / 6)
+  // Calculate score ONLY if real sessions exist with valid measured metrics
+  const metricsValues = profile?.communication_metrics 
+    ? Object.values(profile.communication_metrics).filter(v => typeof v === 'number' && v > 0)
+    : [];
+  const overallScore = (sessionsCount > 0 && metricsValues.length >= 4)
+    ? Math.round(metricsValues.reduce((a, b) => a + b, 0) / metricsValues.length)
     : null;
 
   return (
@@ -80,7 +83,7 @@ export function Navbar({ activeTab, setActiveTab, profile, onOpenSettings }) {
             <div className="text-xs">
               <span className="text-slate-400 font-medium">Orator Score: </span>
               <span className="text-indigo-300 font-bold">
-                {overallScore !== null ? `${overallScore}/100` : 'Unrated (--)'}
+                {overallScore !== null ? `${overallScore}/100` : '--'}
               </span>
             </div>
           </div>

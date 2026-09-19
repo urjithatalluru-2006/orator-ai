@@ -8,8 +8,22 @@ import { SettingsModal } from './components/SettingsModal';
 
 export function App() {
   const [activeTab, setActiveTab] = useState('studio'); // 'studio' | 'dashboard' | 'labs' | 'profile'
-  const [userProfile, setUserProfile] = useState(null);
-  const [latestAnalysis, setLatestAnalysis] = useState(null);
+  const [userProfile, setUserProfile] = useState(() => {
+    try {
+      const saved = localStorage.getItem('orator_user_profile');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+  const [latestAnalysis, setLatestAnalysis] = useState(() => {
+    try {
+      const saved = localStorage.getItem('orator_latest_analysis');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Fetch Profile on Mount
@@ -23,6 +37,7 @@ export function App() {
       if (res.ok) {
         const data = await res.json();
         setUserProfile(data);
+        localStorage.setItem('orator_user_profile', JSON.stringify(data));
       }
     } catch (err) {
       console.warn('Backend server offline or unreachable:', err);
@@ -31,9 +46,23 @@ export function App() {
 
   // Called when LiveStudio ends session and receives deep analysis
   const handleSessionComplete = (analysisData, updatedProfile) => {
+    // [CRITERION 13]: The response is stored in application state
+    console.log('[ORATOR][STATE] App.jsx stored analysis response in latestAnalysis state & localStorage:', {
+      overallScore: analysisData.scores?.overall,
+      executiveVerdict: analysisData.executiveVerdict?.slice(0, 80),
+      isFallback: !!analysisData.isFallback
+    });
+
     setLatestAnalysis(analysisData);
+    try {
+      localStorage.setItem('orator_latest_analysis', JSON.stringify(analysisData));
+    } catch (e) {}
+
     if (updatedProfile) {
       setUserProfile(updatedProfile);
+      try {
+        localStorage.setItem('orator_user_profile', JSON.stringify(updatedProfile));
+      } catch (e) {}
     }
     setActiveTab('dashboard');
   };
